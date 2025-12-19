@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
 /**
  * Welcome to Cloudflare Workers! This is your first Durable Objects application.
  *
@@ -38,6 +40,41 @@ export class MyDurableObject extends DurableObject<Env> {
 	}
 }
 
+export class Counter extends DurableObject<Env> {
+	async getCounterValue(): Promise<number> {
+		let value = (await this.ctx.storage.get<number>("value")) || 0;
+		return value;
+	}
+
+	async increment(amount: number = 1): Promise<number> {
+		let value: number = (await this.ctx.storage.get<number>("value")) || 0;
+		value += amount;
+
+		await this.ctx.storage.put("value", value);
+		return value;
+	}
+
+	async decrement(amount: number = 1): Promise<number> {
+		let value: number = (await this.ctx.storage.get<number>("value")) || 0;
+		value -= amount;
+
+		await this.ctx.storage.put("value", value);
+		return value;
+	}
+}
+
+export class ValueBody {
+	constructor(public amount: number) {
+		this.amount = amount;
+	}
+
+	static fromJson(obj: JsonValue): ValueBody {
+		const parsed = obj as Record<string, JsonValue>;
+		const amount = typeof parsed?.amount === "number" ? parsed.amount : 0;
+		return new ValueBody(amount);
+	}
+}
+
 export default {
 	/**
 	 * This is the standard fetch handler for a Cloudflare Worker
@@ -53,12 +90,51 @@ export default {
 		//
 		// Requests from all Workers to the Durable Object instance named "foo"
 		// will go to a single remote Durable Object instance.
-		const stub = env.MY_DURABLE_OBJECT.getByName("foo");
+		//const stub = env.MY_DURABLE_OBJECT.getByName("foo");
 
 		// Call the `sayHello()` RPC method on the stub to invoke the method on
 		// the remote Durable Object instance.
-		const greeting = await stub.sayHello("world");
+		//const greeting = await stub.sayHello("world");
 
-		return new Response(greeting);
+		// return new Response(count.toString());
+
+		let url = new URL(request.url);
+		let method = request.method;
+
+		let name = url.searchParams.get("name");
+		if (!name) {
+			return new Response(
+				"Select a Durable Object to contact by using" +
+				" the `name` URL query string parameter, for example, ?name=A",
+			);
+		}
+
+		let stub = env.COUNTER_DURABLE_OBJECT.getByName(name);
+
+		let amount = 1;
+
+		if (method === "POST") {
+			let body = await request.json<JsonValue>();
+			let valueBody = ValueBody.fromJson(body);
+			amount = valueBody.amount;
+		}
+
+		let count = null;
+		switch (url.pathname) {
+			case "/incr":
+				count = await stub.increment(amount);
+				break;
+			case "/decr":
+				count = await stub.decrement(amount);
+				break;
+			case "/":
+				// Serves the current value.
+				count = await stub.getCounterValue();
+				break;
+			default:
+				return new Response("Not found", { status: 404 });
+		}
+
+		return new Response(`Durable Object '${name}' count: ${count}`);
 	},
 } satisfies ExportedHandler<Env>;
